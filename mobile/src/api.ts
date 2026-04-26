@@ -39,6 +39,18 @@ export interface Offer {
     lat: number;
     lon: number;
   };
+  intent?: {
+    intent: string;
+    urgency: string;
+    confidence: number;
+    source?: string;
+  };
+}
+
+export interface ClientIntent {
+  intent: 'warm_drink' | 'hot_food' | 'browse' | 'commute' | 'dining';
+  urgency: 'low' | 'medium' | 'high';
+  confidence: number;
 }
 
 export interface AcceptResponse {
@@ -64,10 +76,11 @@ export const apiClient = {
 
   getMerchants: () => api.get('/merchants'),
 
-  generateOffer: (merchantId: string, sessionId: string) =>
+  generateOffer: (merchantId: string, sessionId: string, clientIntent?: ClientIntent) =>
     api.post<Offer>('/offers/generate', {
       merchant_id: merchantId,
       session_id: sessionId,
+      client_intent: clientIntent,
     }),
 
   getOffer: (offerId: string) => api.get<Offer>(`/offers/${offerId}`),

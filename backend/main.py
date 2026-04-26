@@ -40,6 +40,7 @@ logger = logging.getLogger(__name__)
 OPENWEATHER_KEY = os.getenv("OPENWEATHER_KEY", "")
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
+API_PUBLIC_BASE_URL = os.getenv("API_PUBLIC_BASE_URL", "http://localhost:8000")
 
 # Stuttgart coordinates
 STUTTGART_LAT = 48.78
@@ -74,6 +75,15 @@ MERCHANTS = [
         "rule": "IF morning AND first_visit THEN max_discount=12% AND tone=comfort",
         "description": "Traditional Stuttgart bakery, fresh bread since 1962",
     },
+    {
+        "id": "chai_point_bengaluru",
+        "name": "Chai Point Bengaluru",
+        "type": "cafe",
+        "lat": 12.9716,
+        "lon": 77.5946,
+        "rule": "IF rainy_evening THEN max_discount=14% AND tone=warm",
+        "description": "India demo merchant in Bengaluru",
+    },
    
  
 
@@ -84,6 +94,7 @@ MERCHANT_MAP = {m["id"]: m for m in MERCHANTS}
 
 # ── Redis async client ─────────────────────────────────────────────────────────
 _redis: Optional[aioredis.Redis] = None
+_redeem_code_cache: dict[str, str] = {}
 
 
 async def get_redis() -> aioredis.Redis:
@@ -91,6 +102,39 @@ async def get_redis() -> aioredis.Redis:
     if _redis is None:
         _redis = aioredis.from_url(REDIS_URL, decode_responses=True)
     return _redis
+
+
+async def _create_redemption_code(token: str) -> Optional[str]:
+    """Create a short code -> token mapping in Redis for scanner-friendly QR payloads."""
+    code = uuid.uuid4().hex[:10]
+    # Keep local fallback mapping for demo reliability across reloads.
+    _redeem_code_cache[code] = token
+
+    try:
+        r = await get_redis()
+        # Keep mapping alive in Redis for 10 mins.
+        await r.set(f"redeem_code:{code}", token, ex=600)
+    except Exception as e:
+        logger.warning(f"Redis set failed for code {code}: {e}")
+
+    return code
+
+
+async def _resolve_redemption_code(code: str) -> Optional[str]:
+    """Resolve a short code back to a full JWT token."""
+    try:
+        r = await get_redis()
+        token = await r.get(f"redeem_code:{code}")
+        if token:
+            return token
+    except Exception as e:
+        logger.warning(f"Redis get failed for code {code}: {e}")
+
+    # Fallback to local process cache.
+    token = _redeem_code_cache.get(code)
+    if token:
+        logger.info(f"Resolved code {code} via local cache fallback")
+    return token
 
 
 # ── FastAPI app ────────────────────────────────────────────────────────────────
@@ -109,6 +153,15 @@ app.add_middleware(
 )
 
 
+@app.get("/")
+async def root():
+    return {
+        "status": "online",
+        "message": "City Wallet API is active",
+        "instructions": "Point your QR scanner to /redeem/code/{code}"
+    }
+
+
 @app.on_event("startup")
 async def startup():
     await init_db()
@@ -120,6 +173,7 @@ async def startup():
 class GenerateOfferRequest(BaseModel):
     merchant_id: str
     session_id: str
+    client_intent: Optional[dict] = None
 
 
 class AcceptOfferRequest(BaseModel):
@@ -155,7 +209,11 @@ async def fetch_weather(lat: float = STUTTGART_LAT, lon: float = STUTTGART_LON) 
 # ── Endpoints ──────────────────────────────────────────────────────────────────
 
 @app.get("/context", summary="Get current city context state")
-async def get_context(demo: bool = Query(False, description="Force RAINY_QUIET_LUNCH demo state")):
+async def get_context(
+    demo: bool = Query(False, description="Force RAINY_QUIET_LUNCH demo state"),
+    lat: float = Query(STUTTGART_LAT, description="Latitude for weather lookup"),
+    lon: float = Query(STUTTGART_LON, description="Longitude for weather lookup"),
+):
     """
     Returns the full city context payload:
     weather + TOD + PayOne load + Ollama intent + FSM state.
@@ -186,7 +244,7 @@ async def get_context(demo: bool = Query(False, description="Force RAINY_QUIET_L
         }
 
     # Real context
-    weather = await fetch_weather()
+    weather = await fetch_weather(lat, lon)
     now = datetime.now()
     tod_bucket = get_tod_bucket(now.hour)
     payone_load = get_merchant_load(random.choice(list(MERCHANT_MAP.keys())), now.hour)
@@ -231,7 +289,11 @@ async def generate_offer_endpoint(
         raise HTTPException(status_code=404, detail=f"Merchant '{body.merchant_id}' not found")
 
     # Get context
-    weather = await fetch_weather()
+    # Fetch weather near the selected merchant (supports non-Stuttgart demos too).
+    weather = await fetch_weather(
+        float(merchant.get("lat", STUTTGART_LAT)),
+        float(merchant.get("lon", STUTTGART_LON)),
+    )
     now = datetime.now()
     tod_bucket = get_tod_bucket(now.hour)
     payone_load = get_merchant_load(body.merchant_id, now.hour)
@@ -242,13 +304,23 @@ async def generate_offer_endpoint(
     state_def = fsm.get_state_def(context_state) or {}
     offer_archetype = state_def.get("offer_archetype", "general")
 
-    # Classify intent
-    intent = await classify_intent({
-        "weather": weather["condition"],
-        "tod": tod_bucket,
-        "movement_speed": "slow",
-        "dwell_time_seconds": 60,
-    })
+    # Prefer on-device intent (privacy-preserving) when provided by the mobile app.
+    if body.client_intent and isinstance(body.client_intent, dict):
+        intent = {
+            "intent": body.client_intent.get("intent", "browse"),
+            "urgency": body.client_intent.get("urgency", "low"),
+            "confidence": float(body.client_intent.get("confidence", 0.5)),
+            "source": "on_device",
+        }
+        logger.info(f"Using on-device intent for session {body.session_id}: {intent['intent']}")
+    else:
+        intent = await classify_intent({
+            "weather": weather["condition"],
+            "tod": tod_bucket,
+            "movement_speed": "slow",
+            "dwell_time_seconds": 60,
+        })
+        intent["source"] = "server"
     intent_token = intent.get("intent", "browse")
 
     # Generate offer via Ollama
@@ -283,7 +355,13 @@ async def generate_offer_endpoint(
     except Exception as e:
         logger.warning(f"Redis publish failed: {e}")
 
-    return {**offer, "offer_id": offer_id, "context_state": context_state, "merchant": merchant}
+    return {
+        **offer,
+        "offer_id": offer_id,
+        "context_state": context_state,
+        "merchant": merchant,
+        "intent": intent,
+    }
 
 
 @app.get("/offers/{offer_id}", summary="Get a stored offer by ID")
@@ -351,11 +429,12 @@ async def accept_offer(
     await db.commit()
 
     merchant = MERCHANT_MAP.get(event.merchant_id, {})
-    qr_data = json.dumps({
-        "token": token,
-        "offer_id": offer_id,
-        "merchant_id": event.merchant_id,
-    })
+
+    # Use a short scanner-friendly URL whenever possible.
+    code = await _create_redemption_code(token)
+    qr_data = f"{API_PUBLIC_BASE_URL.rstrip('/')}/redeem/code/{code}"
+    
+    logger.info(f"🚀 GENERATED QR URL: {qr_data}")
 
     return {
         "offer_id": offer_id,
@@ -367,11 +446,7 @@ async def accept_offer(
     }
 
 
-@app.post("/redeem/{token}", summary="Redeem a QR token at the merchant")
-async def redeem_token(
-    token: str = Path(..., description="JWT redemption token"),
-    db: AsyncSession = Depends(get_db),
-):
+async def _redeem_token_impl(token: str, db: AsyncSession) -> dict:
     """
     Validates JWT token, marks offer as redeemed in Redis + SQLite.
     Used by merchant's point-of-sale scanner.
@@ -405,6 +480,63 @@ async def redeem_token(
         "discount_label": event.discount_label if event else "",
         "cashback_message": f"🎉 Cashback applied! {event.discount_label if event else 'Discount confirmed'} — enjoy your visit!",
     }
+
+
+@app.post("/redeem/{token}", summary="Redeem a QR token at the merchant")
+async def redeem_token(
+    token: str = Path(..., description="JWT redemption token"),
+    db: AsyncSession = Depends(get_db),
+):
+    return await _redeem_token_impl(token, db)
+
+
+@app.get("/redeem/{token}", summary="Redeem a QR token via URL scan")
+async def redeem_token_get(
+    token: str = Path(..., description="JWT redemption token"),
+    db: AsyncSession = Depends(get_db),
+):
+    # QR scanners and browser deep links usually perform GET requests.
+    return await _redeem_token_impl(token, db)
+
+
+@app.get("/redeem/code/{code}", summary="Redeem using short scanner code")
+async def redeem_by_code_get(
+    code: str = Path(..., description="Short redemption code"),
+    db: AsyncSession = Depends(get_db),
+):
+    from fastapi.responses import HTMLResponse
+    logger.info(f"QR Scan received for code: {code}")
+    
+    token = await _resolve_redemption_code(code)
+    if not token:
+        logger.warning(f"Redemption failed: Code {code} not found or expired")
+        return HTMLResponse(content="<h1>❌ Something went wrong</h1><p>Code expired or invalid. Please generate a new offer.</p>", status_code=400)
+    
+    result = await _redeem_token_impl(token, db)
+    if result["success"]:
+        return HTMLResponse(content=f"""
+            <div style="font-family: sans-serif; text-align: center; padding: 50px; background: #0F0F1A; color: white; height: 100vh;">
+                <h1 style="font-size: 72px;">✅</h1>
+                <h1 style="color: #6C63FF;">Success!</h1>
+                <h2>{result['merchant_name']}</h2>
+                <p style="font-size: 18px;">{result['cashback_message']}</p>
+                <br/>
+                <p style="color: #8B8FA8;">You can close this window now.</p>
+            </div>
+        """)
+    else:
+        return HTMLResponse(content=f"<h1>❌ Redemption Failed</h1><p>{result.get('error', 'Unknown error')}</p>", status_code=400)
+
+
+@app.post("/redeem/code/{code}", summary="Redeem using short scanner code")
+async def redeem_by_code_post(
+    code: str = Path(..., description="Short redemption code"),
+    db: AsyncSession = Depends(get_db),
+):
+    token = await _resolve_redemption_code(code)
+    if not token:
+        return {"success": False, "error": "Code expired or invalid"}
+    return await _redeem_token_impl(token, db)
 
 
 @app.get("/merchant/{merchant_id}/dashboard", summary="Merchant analytics dashboard data")

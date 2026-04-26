@@ -254,6 +254,28 @@ REDIS_URL=redis://localhost:6379
 
 > The system works without a weather key — it falls back to simulated weather.
 
+### On-device SLM intent (mobile)
+
+The mobile app now infers user intent on-device and sends only an abstract intent token to backend:
+
+```json
+{
+  "intent": "warm_drink|hot_food|browse|commute|dining",
+  "urgency": "low|medium|high",
+  "confidence": 0.0
+}
+```
+
+To connect a real local runtime (Phi-3/Gemma wrapper), set in `mobile/app.json`:
+
+```json
+"extra": {
+  "ON_DEVICE_SLM_ENDPOINT": "http://127.0.0.1:8080/infer"
+}
+```
+
+If not set, the app uses a reliable on-device fallback policy in `mobile/src/onDeviceSlm.ts`.
+
 ---
 
 ## 🛠️ Troubleshooting

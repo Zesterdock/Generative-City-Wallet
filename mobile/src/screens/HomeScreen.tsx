@@ -15,9 +15,11 @@ import {
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Location from 'expo-location';
 import { useNavigation } from '@react-navigation/native';
-import { apiClient, Offer, ContextPayload } from '../api';
+import { apiClient, Offer, ContextPayload, ClientIntent } from '../api';
 import OfferCard from '../components/OfferCard';
 import { BASE_URL } from '../api';
+import { inferIntentOnDevice } from '../onDeviceSlm';
+import Constants from 'expo-constants';
 
 // Simple UUID generator (no crypto needed in RN)
 const genSessionId = () =>
@@ -33,6 +35,7 @@ export default function HomeScreen() {
   const [loading, setLoading] = useState(true);
   const [statusText, setStatusText] = useState('Initialising…');
   const [locationGranted, setLocationGranted] = useState(false);
+  const [localIntent, setLocalIntent] = useState<ClientIntent | null>(null);
 
   const shimmerAnim = useRef(new Animated.Value(0)).current;
 
@@ -66,9 +69,19 @@ export default function HomeScreen() {
 
     // Fetch context (use demo mode for reliability)
     setStatusText('Reading city context…');
+    let localIntentResult: ClientIntent | null = null;
     try {
       const ctxResp = await apiClient.getContext(true); // demo=true for hackathon
       setContext(ctxResp.data);
+
+      // On-device SLM intent inference. Only abstract intent is sent upstream.
+      localIntentResult = await inferIntentOnDevice({
+        weather: String(ctxResp.data.signals?.weather_condition || 'unknown'),
+        tod: String(ctxResp.data.signals?.tod_bucket || 'afternoon'),
+        movement_speed: 'slow',
+        dwell_time_seconds: 75,
+      });
+      setLocalIntent(localIntentResult);
     } catch (e) {
       console.warn('Context fetch failed', e);
     }
@@ -82,7 +95,7 @@ export default function HomeScreen() {
     // Generate offer
     setStatusText('Generating your offer with AI…');
     try {
-      const offerResp = await apiClient.generateOffer(merchantId, sid);
+      const offerResp = await apiClient.generateOffer(merchantId, sid, localIntentResult || undefined);
       setOffer(offerResp.data);
     } catch (e) {
       console.warn('Offer generation failed', e);
@@ -196,7 +209,7 @@ export default function HomeScreen() {
           <View style={styles.intentRow}>
             <View style={styles.intentBadge}>
               <Text style={styles.intentText}>
-                🧠 Intent: {context.intent.intent} · Urgency: {context.intent.urgency}
+                🧠 Local AI ({Constants.expoConfig?.extra?.SLM_MODEL || 'Heuristic'}): {localIntent?.intent || context.intent.intent} · Urgency: {localIntent?.urgency || context.intent.urgency}
               </Text>
             </View>
           </View>

@@ -32,6 +32,7 @@ export default function RedemptionScreen() {
   const [secondsLeft, setSecondsLeft] = useState(COUNTDOWN_SECONDS);
   const [status, setStatus] = useState<'active' | 'expired' | 'confirmed'>('active');
   const [cashbackMessage, setCashbackMessage] = useState('');
+  const [redeemError, setRedeemError] = useState('');
 
   const progressAnim = useRef(new Animated.Value(1)).current;
   const confirmAnim = useRef(new Animated.Value(0)).current;
@@ -68,28 +69,30 @@ export default function RedemptionScreen() {
     return () => clearInterval(timer);
   }, [status]);
 
-  // Auto-redeem after 3s for demo
-  useEffect(() => {
-    const t = setTimeout(async () => {
-      if (status !== 'active') return;
-      try {
-        const resp = await apiClient.redeemToken(acceptData.token);
-        if (resp.data.success) {
-          setCashbackMessage(resp.data.cashback_message || '🎉 Cashback confirmed!');
-          setStatus('confirmed');
-          Animated.spring(confirmAnim, {
-            toValue: 1,
-            friction: 6,
-            tension: 50,
-            useNativeDriver: true,
-          }).start();
-        }
-      } catch (e) {
-        console.warn('Auto-redeem failed', e);
+  const runRedeem = async () => {
+    if (status !== 'active') return;
+    setRedeemError('');
+    try {
+      const resp = await apiClient.redeemToken(acceptData.token);
+      if (resp.data.success) {
+        setCashbackMessage(resp.data.cashback_message || '🎉 Cashback confirmed!');
+        setStatus('confirmed');
+        Animated.spring(confirmAnim, {
+          toValue: 1,
+          friction: 6,
+          tension: 50,
+          useNativeDriver: true,
+        }).start();
+        return;
       }
-    }, 3000);
-    return () => clearTimeout(t);
-  }, []);
+
+      // Show backend-provided reason (expired/already redeemed/invalid).
+      setRedeemError(resp.data.error || 'Redemption failed.');
+    } catch (e) {
+      console.warn('Redeem failed', e);
+      setRedeemError('Network error while redeeming. Check backend connection.');
+    }
+  };
 
   const progressBarColor = secondsLeft < 20 ? '#FF4757' : '#6C63FF';
   const progressWidth = progressAnim.interpolate({
@@ -170,10 +173,10 @@ export default function RedemptionScreen() {
           >
             <QRCode
               value={acceptData.qr_data}
-              size={220}
+              size={300}
               color="#1A1A2E"
               backgroundColor="#FFFFFF"
-              ecl="H"
+              ecl="M"
             />
           </Animated.View>
         </View>
@@ -196,6 +199,16 @@ export default function RedemptionScreen() {
           <Text style={styles.securityText}>
             🔐 Signed with JWT · One-time use · Auto-expires in 60s
           </Text>
+        </View>
+
+        {/* Manual redeem action for deterministic demo/testing */}
+        <View style={{ paddingHorizontal: 20, marginBottom: 12 }}>
+          <TouchableOpacity style={styles.redeemBtn} onPress={runRedeem}>
+            <Text style={styles.redeemBtnText}>Simulate POS Redeem</Text>
+          </TouchableOpacity>
+          {!!redeemError && (
+            <Text style={styles.redeemErrorText}>⚠️ {redeemError}</Text>
+          )}
         </View>
 
         {/* Offer details */}
@@ -267,6 +280,23 @@ const styles = StyleSheet.create({
     marginBottom: 20,
   },
   securityText: { color: '#4ECDC4', fontSize: 12 },
+  redeemBtn: {
+    backgroundColor: '#6C63FF',
+    borderRadius: 12,
+    paddingVertical: 13,
+    alignItems: 'center',
+  },
+  redeemBtnText: {
+    color: '#FFFFFF',
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  redeemErrorText: {
+    color: '#FF8A80',
+    fontSize: 12,
+    marginTop: 8,
+    textAlign: 'center',
+  },
   offerDetails: { paddingHorizontal: 20 },
   offerDetailTitle: { color: '#FFFFFF', fontSize: 16, fontWeight: '600', marginBottom: 4 },
   offerDetailSub: { color: '#8B8FA8', fontSize: 13 },

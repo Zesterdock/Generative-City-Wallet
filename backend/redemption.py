@@ -16,7 +16,8 @@ logger = logging.getLogger(__name__)
 
 JWT_SECRET = os.getenv("JWT_SECRET", "supersecret_dev_key_change_in_prod")
 JWT_ALGORITHM = "HS256"
-TOKEN_EXPIRY_SECONDS = 60
+
+TOKEN_EXPIRY_SECONDS = 300
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 _redis_client: Optional[redis.Redis] = None

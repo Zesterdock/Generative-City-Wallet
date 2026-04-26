@@ -42,7 +42,10 @@
       ]
     ],
     "extra": {
-      "API_BASE_URL": "http://192.168.101.11:8000"
+      "API_BASE_URL": "http://192.168.101.11:8000",
+      "ON_DEVICE_SLM_ENDPOINT": "http://192.168.101.11:11434/api/generate",
+      "SLM_PROVIDER": "ollama",
+      "SLM_MODEL": "phi3"
     }
   }
 }
