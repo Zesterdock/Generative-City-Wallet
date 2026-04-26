@@ -1,0 +1,29 @@
+states:
+  - name: RAINY_QUIET_LUNCH
+    conditions:
+      weather: [rain, drizzle]
+      tod: [lunch]
+      payone_load: low
+    offer_archetype: warm_drink
+    emotional_frame: warm
+
+  - name: SUNNY_BUSY_EVENING
+    conditions:
+      weather: [clear, clouds]
+      tod: [evening]
+      payone_load: high
+    offer_archetype: dining
+    emotional_frame: social
+
+  - name: COLD_ANY_MORNING
+    conditions:
+      weather: [snow, mist, fog]
+      tod: [morning]
+      payone_load: any
+    offer_archetype: hot_food
+    emotional_frame: comfort
+
+  - name: GENERIC_BROWSE
+    conditions: {}
+    offer_archetype: general
+    emotional_frame: factual
