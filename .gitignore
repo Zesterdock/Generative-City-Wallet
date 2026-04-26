@@ -1,0 +1,56 @@
+# OS / Editor
+.DS_Store
+Thumbs.db
+Desktop.ini
+.vscode/
+.idea/
+
+# Secrets / env files
+.env
+.env.*
+!.env.example
+!.env*.example
+
+# Python backend
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+.venv/
+venv/
+env/
+
+# Backend local data
+*.db
+*.sqlite
+*.sqlite3
+backend/city_wallet.db
+
+# Node / JS
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Next.js dashboard
+merchant-dashboard/.next/
+merchant-dashboard/out/
+merchant-dashboard/.vercel/
+
+# Expo / React Native mobile
+mobile/.expo/
+mobile/.expo-shared/
+mobile/android/
+mobile/ios/
+
+# Build artifacts
+dist/
+build/
+coverage/
+*.log
